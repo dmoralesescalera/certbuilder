@@ -815,7 +815,21 @@ class CertificateBuilder(object):
             An asn1crypto.x509.Certificate object of the newly signed
             certificate
         """
-
+        
+        def rsa_mpc_sign(signing_private_key, tbs_cert_dump, hash_algo):
+            # Calcular el hash correspondiente a tbs_cert_dump
+            digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+            digest.update(tbs_cert_dump)
+            digest = digest.finalize()
+            print("Hash: " + hexlify(digest))
+            
+            # Abrir una conexion socket con el servidor MPC
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect(('127.0.0.1', 5000))
+            s.send('f')  # Enviar comando para firmar
+        
+        # Comentar la parte que comprueba el tipo de la clave, ya que la clave privada viene solo como id
+        """
         is_oscrypto = isinstance(signing_private_key, asymmetric.PrivateKey)
         if not isinstance(signing_private_key, keys.PrivateKeyInfo) and not is_oscrypto:
             raise TypeError(_pretty_message(
@@ -826,6 +840,7 @@ class CertificateBuilder(object):
                 ''',
                 _type_name(signing_private_key)
             ))
+        """    
 
         if self._self_signed is not True and self._issuer is None:
             raise ValueError(_pretty_message(
@@ -857,10 +872,15 @@ class CertificateBuilder(object):
                         ''',
                         ca_only_extension
                     ))
-
-        signature_algo = signing_private_key.algorithm
+        
+        # Se fuerza a que el algoritmo para firmar sea 'rsa'
+        #signature_algo = signing_private_key.algorithm
+        signature_algo = 'rsa'
+        
+        """
         if signature_algo == 'ec':
             signature_algo = 'ecdsa'
+        """
 
         signature_algorithm_id = '%s_%s' % (self._hash_algo, signature_algo)
 
@@ -906,16 +926,14 @@ class CertificateBuilder(object):
             'subject_public_key_info': self._subject_public_key,
             'extensions': extensions
         })
-
-        if signing_private_key.algorithm == 'rsa':
-            sign_func = asymmetric.rsa_pkcs1v15_sign
-        elif signing_private_key.algorithm == 'dsa':
-            sign_func = asymmetric.dsa_sign
-        elif signing_private_key.algorithm == 'ec':
-            sign_func = asymmetric.ecdsa_sign
-
+        
+        # Enlazar la funcion de firma con la funcion creada previamente
+        sign_func = rsa_mpc_sign
+        
+        """
         if not is_oscrypto:
             signing_private_key = asymmetric.load_private_key(signing_private_key)
+        """
         signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo)
 
         return x509.Certificate({
