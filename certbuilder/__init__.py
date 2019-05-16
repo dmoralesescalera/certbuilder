@@ -12,7 +12,12 @@ from asn1crypto import x509, keys, core
 from asn1crypto.util import int_to_bytes, int_from_bytes, timezone
 from oscrypto import asymmetric, util
 
-from .version import __version__, __version_info__
+###
+from binascii import hexlify, unhexlify
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+import socket
+###
 
 if sys.version_info < (3,):
     int_types = (int, long)  # noqa
@@ -24,12 +29,8 @@ else:
     byte_cls = bytes
 
 
-__all__ = [
-    '__version__',
-    '__version_info__',
-    'CertificateBuilder',
-    'pem_armor_certificate',
-]
+__version__ = '0.14.2'
+__version_info__ = (0, 14, 2)
 
 
 def _writer(func):
@@ -111,8 +112,11 @@ class CertificateBuilder(object):
             the certificate is being issued for
         """
 
+	# Modificar subject_public_key para que en vez de ser un PublicKeyInfo
+	# sea un UniversalString (El parametro se recibe como un string normal)
+
         self.subject = subject
-        self.subject_public_key = subject_public_key
+	self.subject_public_key = subject_public_key
         self.ca = False
 
         self._hash_algo = 'sha256'
@@ -815,21 +819,41 @@ class CertificateBuilder(object):
             An asn1crypto.x509.Certificate object of the newly signed
             certificate
         """
-        
-        def rsa_mpc_sign(signing_private_key, tbs_cert_dump, hash_algo):
-            # Calcular el hash correspondiente a tbs_cert_dump
-            digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
-            digest.update(tbs_cert_dump)
-            digest = digest.finalize()
-            print("Hash: " + hexlify(digest))
-            
-            # Abrir una conexion socket con el servidor MPC
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect(('127.0.0.1', 5000))
-            s.send('f')  # Enviar comando para firmar
-        
-        # Comentar la parte que comprueba el tipo de la clave, ya que la clave privada viene solo como id
-        """
+
+	print("Se ha ejecutado la funcion build de CertificateBuilder")
+
+	def rsa_mpc_sign(signing_private_key, tbs_cert_dump, hash_algo):
+		print("Se ha ejecutado rsa_mpc_sign")
+		
+		# Calcular el hash correspondiente a tbs_cert_dump		
+		digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+		digest.update(tbs_cert_dump)
+		digest = digest.finalize()
+		print("[Client] Hash: " + hexlify(digest))
+		
+		# Abrir una conexion socket con el servidor MPC
+		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		s.connect(('127.0.0.1', 5000))
+		s.send('f')	#Enviar comando para firmar
+		
+		print("[Client] Id clave privada: " + str(signing_private_key))
+		
+		# Formateo y envio de longitud y valor del hash a firmar
+		digestLen = len(digest)
+		print("[Client] digestLen: " + str(digestLen))
+		print("[Client] digest: " + hexlify(digest))
+		s.send(str(digestLen))
+		s.send(str(digest))
+
+		firmaLen = int(s.recv(3))
+		print("[Client] firmaLen: " + str(firmaLen))
+		firma = s.recv(firmaLen)
+		print("[Client] firma: " + hexlify(firma))
+		s.close()
+		return firma
+	
+	# Comentar la parte que comprueba el tipo de clave, ya que la clave privada viene solo como id		
+	"""
         is_oscrypto = isinstance(signing_private_key, asymmetric.PrivateKey)
         if not isinstance(signing_private_key, keys.PrivateKeyInfo) and not is_oscrypto:
             raise TypeError(_pretty_message(
@@ -840,7 +864,7 @@ class CertificateBuilder(object):
                 ''',
                 _type_name(signing_private_key)
             ))
-        """    
+	"""
 
         if self._self_signed is not True and self._issuer is None:
             raise ValueError(_pretty_message(
@@ -872,26 +896,17 @@ class CertificateBuilder(object):
                         ''',
                         ca_only_extension
                     ))
-        
-        # Se fuerza a que el algoritmo para firmar sea 'rsa'
+	
+	# Se fuerza a que el algoritmo para firmar sea 'rsa'
         #signature_algo = signing_private_key.algorithm
-        signature_algo = 'rsa'
-        
-        """
+	signature_algo = 'rsa'
+	
+	"""
         if signature_algo == 'ec':
             signature_algo = 'ecdsa'
-        """
+	"""
 
         signature_algorithm_id = '%s_%s' % (self._hash_algo, signature_algo)
-
-        # RFC 3280 4.1.2.5
-        def _make_validity_time(dt):
-            if dt < datetime(2050, 1, 1, tzinfo=timezone.utc):
-                value = x509.Time(name='utc_time', value=dt)
-            else:
-                value = x509.Time(name='general_time', value=dt)
-
-            return value
 
         def _make_extension(name, value):
             return {
@@ -919,23 +934,29 @@ class CertificateBuilder(object):
             },
             'issuer': self._issuer,
             'validity': {
-                'not_before': _make_validity_time(self._begin_date),
-                'not_after': _make_validity_time(self._end_date),
+                'not_before': x509.Time(name='utc_time', value=self._begin_date),
+                'not_after': x509.Time(name='utc_time', value=self._end_date),
             },
             'subject': self._subject,
             'subject_public_key_info': self._subject_public_key,
             'extensions': extensions
         })
-        
-        # Enlazar la funcion de firma con la funcion creada previamente
-        sign_func = rsa_mpc_sign
-        
-        """
+
+
+	# Enlazar la funcion de firma con la funcion creada previamente
+	sign_func = rsa_mpc_sign
+
+	"""
         if not is_oscrypto:
             signing_private_key = asymmetric.load_private_key(signing_private_key)
-        """
-        signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo)
+	"""
 
+        signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo)
+	
+	# Firma temporal para poder compilar el script
+	#signature = b'00112233449BEB3D052506ECC3CC698D169655AE5CF0DF80632DE26A4D73FCBF3F660E4DEC39F952158F595104070381A6273648450DB58ADFA12C6642E91045FE8987F185FBA0D7A808A4B0FB98C8F009847BDB636AA5475C6F6D9078D018B5BC578050002832A1212793BCFD6DE3D002A01B2AADC2998BBFA9EB5D25E07B7FDC3418B9BA61895A6E3128D32088F4855C92FBAAD141C14D8C91BBAA81E325AFE05DAB0AF51815C44818107ED2D251C913817DECC959A990131C3C703948AF3572F22DFF66A000BBB54AAA90488DE7E2D1471657E6901BED9697D11B239678079EDB13DC5A5515C43681B419AB127CBAE1D6226B4E2655861134BF19D0D4C66D'
+	#
+	
         return x509.Certificate({
             'tbs_certificate': tbs_cert,
             'signature_algorithm': {
