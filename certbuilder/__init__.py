@@ -808,23 +808,143 @@ class CertificateBuilder(object):
         """
         Validates the certificate information, constructs the ASN.1 structure
         and then signs it
-
         :param signing_private_key:
             An asn1crypto.keys.PrivateKeyInfo or oscrypto.asymmetric.PrivateKey
             object for the private key to sign the certificate with. If the key
             is self-signed, this should be the private key that matches the
             public key, otherwise it needs to be the issuer's private key.
+        :return:
+            An asn1crypto.x509.Certificate object of the newly signed
+            certificate
+        """
+
+        is_oscrypto = isinstance(signing_private_key, asymmetric.PrivateKey)
+        if not isinstance(signing_private_key, keys.PrivateKeyInfo) and not is_oscrypto:
+            raise TypeError(_pretty_message(
+                '''
+                signing_private_key must be an instance of
+                asn1crypto.keys.PrivateKeyInfo or
+                oscrypto.asymmetric.PrivateKey, not %s
+                ''',
+                _type_name(signing_private_key)
+            ))
+
+        if self._self_signed is not True and self._issuer is None:
+            raise ValueError(_pretty_message(
+                '''
+                Certificate must be self-signed, or an issuer must be specified
+                '''
+            ))
+
+        if self._self_signed:
+            self._issuer = self._subject
+
+        if self._serial_number is None:
+            time_part = int_to_bytes(int(time.time()))
+            random_part = util.rand_bytes(4)
+            self._serial_number = int_from_bytes(time_part + random_part)
+
+        if self._begin_date is None:
+            self._begin_date = datetime.now(timezone.utc)
+
+        if self._end_date is None:
+            self._end_date = self._begin_date + timedelta(365)
+
+        if not self.ca:
+            for ca_only_extension in set(['policy_mappings', 'policy_constraints', 'inhibit_any_policy']):
+                if ca_only_extension in self._other_extensions:
+                    raise ValueError(_pretty_message(
+                        '''
+                        Extension %s is only valid for CA certificates
+                        ''',
+                        ca_only_extension
+                    ))
+
+        signature_algo = signing_private_key.algorithm
+        if signature_algo == 'ec':
+            signature_algo = 'ecdsa'
+
+        signature_algorithm_id = '%s_%s' % (self._hash_algo, signature_algo)
+
+        # RFC 3280 4.1.2.5
+        def _make_validity_time(dt):
+            if dt < datetime(2050, 1, 1, tzinfo=timezone.utc):
+                value = x509.Time(name='utc_time', value=dt)
+            else:
+                value = x509.Time(name='general_time', value=dt)
+
+            return value
+
+        def _make_extension(name, value):
+            return {
+                'extn_id': name,
+                'critical': self._determine_critical(name),
+                'extn_value': value
+            }
+
+        extensions = []
+        for name in sorted(self._special_extensions):
+            value = getattr(self, '_%s' % name)
+            if name == 'ocsp_no_check':
+                value = core.Null() if value else None
+            if value is not None:
+                extensions.append(_make_extension(name, value))
+
+        for name in sorted(self._other_extensions.keys()):
+            extensions.append(_make_extension(name, self._other_extensions[name]))
+
+        tbs_cert = x509.TbsCertificate({
+            'version': 'v3',
+            'serial_number': self._serial_number,
+            'signature': {
+                'algorithm': signature_algorithm_id
+            },
+            'issuer': self._issuer,
+            'validity': {
+                'not_before': _make_validity_time(self._begin_date),
+                'not_after': _make_validity_time(self._end_date),
+            },
+            'subject': self._subject,
+            'subject_public_key_info': self._subject_public_key,
+            'extensions': extensions
+        })
+
+        if signing_private_key.algorithm == 'rsa':
+            sign_func = asymmetric.rsa_pkcs1v15_sign
+        elif signing_private_key.algorithm == 'dsa':
+            sign_func = asymmetric.dsa_sign
+        elif signing_private_key.algorithm == 'ec':
+            sign_func = asymmetric.ecdsa_sign
+
+        if not is_oscrypto:
+            signing_private_key = asymmetric.load_private_key(signing_private_key)
+        signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo)
+
+        return x509.Certificate({
+            'tbs_certificate': tbs_cert,
+            'signature_algorithm': {
+                'algorithm': signature_algorithm_id
+            },
+            'signature_value': signature
+        })
+
+    def build_mpc(self, signing_private_key):
+	"""
+        Validates the certificate information, constructs the ASN.1 structure
+        and then signs it with a mpc engine
+
+        :param signing_private_key:
+            An integer identifier for the private key to sign the certificate with.
+            This identifier permits the mpc engine to find the private key associated
+            with the public key exported in the key generation process
 
         :return:
             An asn1crypto.x509.Certificate object of the newly signed
             certificate
         """
 
-	print("Se ha ejecutado la funcion build de CertificateBuilder")
-
 	def rsa_mpc_sign(signing_private_key, tbs_cert_dump, hash_algo):
-		print("Se ha ejecutado rsa_mpc_sign")
-		
+
 		# Calcular el hash correspondiente a tbs_cert_dump		
 		digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
 		digest.update(tbs_cert_dump)
@@ -852,19 +972,6 @@ class CertificateBuilder(object):
 		s.close()
 		return firma
 	
-	# Comentar la parte que comprueba el tipo de clave, ya que la clave privada viene solo como id		
-	"""
-        is_oscrypto = isinstance(signing_private_key, asymmetric.PrivateKey)
-        if not isinstance(signing_private_key, keys.PrivateKeyInfo) and not is_oscrypto:
-            raise TypeError(_pretty_message(
-                '''
-                signing_private_key must be an instance of
-                asn1crypto.keys.PrivateKeyInfo or
-                oscrypto.asymmetric.PrivateKey, not %s
-                ''',
-                _type_name(signing_private_key)
-            ))
-	"""
 
         if self._self_signed is not True and self._issuer is None:
             raise ValueError(_pretty_message(
@@ -898,14 +1005,9 @@ class CertificateBuilder(object):
                     ))
 	
 	# Se fuerza a que el algoritmo para firmar sea 'rsa'
-        #signature_algo = signing_private_key.algorithm
 	signature_algo = 'rsa'
 	
-	"""
-        if signature_algo == 'ec':
-            signature_algo = 'ecdsa'
-	"""
-
+	# El algoritmo de hash esta actualmente limitado a SHA256
         signature_algorithm_id = '%s_%s' % (self._hash_algo, signature_algo)
 
         def _make_extension(name, value):
@@ -945,11 +1047,6 @@ class CertificateBuilder(object):
 
 	# Enlazar la funcion de firma con la funcion creada previamente
 	sign_func = rsa_mpc_sign
-
-	"""
-        if not is_oscrypto:
-            signing_private_key = asymmetric.load_private_key(signing_private_key)
-	"""
 
         signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo)
 	
