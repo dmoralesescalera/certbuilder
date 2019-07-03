@@ -17,6 +17,8 @@ from binascii import hexlify, unhexlify
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 import socket
+import requests
+import json
 ###
 
 if sys.version_info < (3,):
@@ -55,6 +57,15 @@ def pem_armor_certificate(certificate):
     """
 
     return asymmetric.dump_certificate(certificate)
+
+# Method to generate a key pair with MPC
+# args: None
+# return: a dictionary containing status and keyId
+def generate_pair_mpc():
+	target = "http://127.0.0.1:5000/generateKeys"
+	r = requests.get(target)
+	response = dict(json.loads(r.text))
+	return response	
 
 
 class CertificateBuilder(object):
@@ -945,31 +956,21 @@ class CertificateBuilder(object):
 
 	def rsa_mpc_sign(signing_private_key, tbs_cert_dump, hash_algo):
 
-		# Calcular el hash correspondiente a tbs_cert_dump		
+		# Calculate hash corresponding to tbs_cert_dump	[Only SHA256]	
 		digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
 		digest.update(tbs_cert_dump)
-		digest = digest.finalize()
-		print("[Client] Hash: " + hexlify(digest))
+		digest = hexlify(digest.finalize())
+		print("[Client] Hash: " + digest)
 		
-		# Abrir una conexion socket con el servidor MPC
-		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		s.connect(('127.0.0.1', 5000))
-		s.send('f')	#Enviar comando para firmar
-		
-		print("[Client] Id clave privada: " + str(signing_private_key))
-		
-		# Formateo y envio de longitud y valor del hash a firmar
-		digestLen = len(digest)
-		print("[Client] digestLen: " + str(digestLen))
-		print("[Client] digest: " + hexlify(digest))
-		s.send(str(digestLen))
-		s.send(str(digest))
+		# Send HTTP GET request to the orquestrator for signing
+		target = "http://127.0.0.1:5000/signMessage/" + str(signing_private_key) + "?message=" + str(digest)
+		r = requests.get(target)
 
-		firmaLen = int(s.recv(3))
-		print("[Client] firmaLen: " + str(firmaLen))
-		firma = s.recv(firmaLen)
-		print("[Client] firma: " + hexlify(firma))
-		s.close()
+		response = dict(json.loads(r.text))
+		
+		# Sign format must be bytearray 
+		print("Firma: " + str(response["sign"]))		
+		firma = unhexlify(response["sign"])
 		return firma
 	
 
@@ -1004,10 +1005,10 @@ class CertificateBuilder(object):
                         ca_only_extension
                     ))
 	
-	# Se fuerza a que el algoritmo para firmar sea 'rsa'
+	# The algorith is forced to be 'rsa'
 	signature_algo = 'rsa'
 	
-	# El algoritmo de hash esta actualmente limitado a SHA256
+	# Hash's algorithm limited to SHA256 (internally)
         signature_algorithm_id = '%s_%s' % (self._hash_algo, signature_algo)
 
         def _make_extension(name, value):
@@ -1045,14 +1046,10 @@ class CertificateBuilder(object):
         })
 
 
-	# Enlazar la funcion de firma con la funcion creada previamente
+	# Function binding
 	sign_func = rsa_mpc_sign
 
         signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo)
-	
-	# Firma temporal para poder compilar el script
-	#signature = b'00112233449BEB3D052506ECC3CC698D169655AE5CF0DF80632DE26A4D73FCBF3F660E4DEC39F952158F595104070381A6273648450DB58ADFA12C6642E91045FE8987F185FBA0D7A808A4B0FB98C8F009847BDB636AA5475C6F6D9078D018B5BC578050002832A1212793BCFD6DE3D002A01B2AADC2998BBFA9EB5D25E07B7FDC3418B9BA61895A6E3128D32088F4855C92FBAAD141C14D8C91BBAA81E325AFE05DAB0AF51815C44818107ED2D251C913817DECC959A990131C3C703948AF3572F22DFF66A000BBB54AAA90488DE7E2D1471657E6901BED9697D11B239678079EDB13DC5A5515C43681B419AB127CBAE1D6226B4E2655861134BF19D0D4C66D'
-	#
 	
         return x509.Certificate({
             'tbs_certificate': tbs_cert,
