@@ -61,8 +61,7 @@ def pem_armor_certificate(certificate):
 # Method to generate a key pair with MPC
 # args: None
 # return: a dictionary containing status and keyId
-def generate_pair_mpc():
-	target = "http://127.0.0.1:5000/generateKeys"
+def generate_pair_mpc(target):
 	r = requests.get(target)
 	response = dict(json.loads(r.text))
 	return response	
@@ -939,7 +938,7 @@ class CertificateBuilder(object):
             'signature_value': signature
         })
 
-    def build_mpc(self, signing_private_key):
+    def build_mpc(self, signing_private_key, orq_ip, orq_port):
 	"""
         Validates the certificate information, constructs the ASN.1 structure
         and then signs it with a mpc engine
@@ -948,13 +947,16 @@ class CertificateBuilder(object):
             An integer identifier for the private key to sign the certificate with.
             This identifier permits the mpc engine to find the private key associated
             with the public key exported in the key generation process
+	
+	:param orq_ip, orq_port
+	    Info to send requests to the orchestrator
 
         :return:
             An asn1crypto.x509.Certificate object of the newly signed
             certificate
         """
 
-	def rsa_mpc_sign(signing_private_key, tbs_cert_dump, hash_algo):
+	def rsa_mpc_sign(signing_private_key, tbs_cert_dump, hash_algo, orq_ip, orq_port):
 
 		# Calculate hash corresponding to tbs_cert_dump	[Only SHA256]	
 		digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
@@ -963,7 +965,7 @@ class CertificateBuilder(object):
 		print("[Client] Hash: " + digest)
 		
 		# Send HTTP GET request to the orquestrator for signing
-		target = "http://127.0.0.1:5000/signMessage/" + str(signing_private_key) + "?message=" + str(digest)
+		target = "http://" + orq_ip + ":" + orq_port + "/signMessage/" + str(signing_private_key) + "?message=" + str(digest)
 		r = requests.get(target)
 
 		response = dict(json.loads(r.text))
@@ -1049,7 +1051,7 @@ class CertificateBuilder(object):
 	# Function binding
 	sign_func = rsa_mpc_sign
 
-        signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo)
+        signature = sign_func(signing_private_key, tbs_cert.dump(), self._hash_algo, orq_ip, orq_port)
 	
         return x509.Certificate({
             'tbs_certificate': tbs_cert,
